@@ -6,7 +6,7 @@ import { SelectionCancelledError, SPIKE_PROFILE, type Transport, type TransportP
 import { renewGif } from '../render/gif';
 import { solid } from '../render/matrix';
 
-type DisplayContent =
+export type DisplayContent =
   | { image: RgbImage }
   | { gif: Uint8Array; width: number; height: number; still?: RgbImage };
 
@@ -63,6 +63,8 @@ export class DeviceController {
   private temporary = false;
   private displayEnabled?: boolean;
   private keepBlack = false;
+  /** Content to restore after a greeting when nothing has been sent on this connection yet. */
+  private restoreFallback?: () => DisplayContent | undefined;
   private blackImage: RgbImage = solid(32, 16, [0, 0, 0]);
   readonly profile: TransportProfile;
   readonly timeouts: Timeouts;
@@ -84,12 +86,17 @@ export class DeviceController {
   get temporaryActive() { return this.temporary; }
   get isKeepBlack() { return this.keepBlack; }
   get displayOff() { return this.displayEnabled === false; }
-  get canRestoreContent() { return !!this.displayed || this.keepBlack; }
+  get canRestoreContent() { return !!this.displayed || this.keepBlack || !!this.restoreFallback?.(); }
   subscribe(cb: () => void) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
 
   setKeepBlack(on: boolean, blackImage?: RgbImage): void {
     this.keepBlack = on;
     if (blackImage) this.blackImage = structuredClone(blackImage);
+    this.listeners.forEach((cb) => cb());
+  }
+
+  setRestoreFallback(provider?: () => DisplayContent | undefined): void {
+    this.restoreFallback = provider;
     this.listeners.forEach((cb) => cb());
   }
 
@@ -217,7 +224,7 @@ export class DeviceController {
   async playTemporary(gif: Uint8Array, still: RgbImage, durationMs: number): Promise<'completed' | 'cancelled'> {
     if (this.temporary) throw new DeviceError('A greeting is already playing', 'busy');
     if (this.state !== 'Ready') throw new DeviceError('Connect the primary cap first', 'disconnected');
-    if (!this.displayed && !this.keepBlack) throw new DeviceError('Send content to the cap first so it can be restored after the greeting', 'invalid');
+    if (!this.canRestoreContent) throw new DeviceError('Send content to the cap first so it can be restored after the greeting', 'invalid');
     if (!Number.isFinite(durationMs) || durationMs <= 0) throw new DeviceError('Invalid greeting duration', 'invalid');
     const greeting = { gif: gif.slice(), width: still.width, height: still.height, still: structuredClone(still) };
     // Validate before taking the queue or changing the display.
@@ -230,7 +237,7 @@ export class DeviceController {
         if (epoch !== this.epoch) throw new DeviceError('Connection changed before greeting', 'disconnected');
         const previous: DisplayContent | undefined = this.keepBlack
           ? { image: solid(still.width, still.height, [0, 0, 0]) }
-          : this.displayed;
+          : this.displayed ?? this.restoreFallback?.();
         if (!previous) throw new DeviceError('Previous content is no longer available', 'disconnected');
         const restored = 'gif' in previous ? { ...previous, gif: renewGif(previous.gif), still: previous.still ?? greeting.still } : previous;
         if ('gif' in restored) buildGifStream(restored.gif, restored.width, restored.height, this.profile.maxStreamBytes);

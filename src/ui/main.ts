@@ -1,6 +1,6 @@
 import './style.css';
 import { registerSW } from 'virtual:pwa-register';
-import { DeviceController, DeviceError } from '../controller/deviceController';
+import { DeviceController, DeviceError, type DisplayContent } from '../controller/deviceController';
 import type { RgbImage } from '../protocol/framing';
 import { imageToMatrix, shrinkForStorage, type Fit } from '../render/image';
 import { cornerTest, drawPreview, parseHexColor, solid, transformImage } from '../render/matrix';
@@ -72,6 +72,17 @@ function trace(dir: 'tx' | 'rx' | 'ev', label: string, data?: Uint8Array) {
   const el = document.getElementById('trace');
   if (el) { el.textContent = traceLog.join('\n'); el.scrollTop = el.scrollHeight; }
 }
+let fallbackCache: { frames: RgbImage[]; content: DisplayContent } | null = null;
+/** The Connect preview, restored after a scan or sound greeting when nothing was sent since connecting. */
+function connectPreviewContent(): DisplayContent | undefined {
+  if (!lastImage || lastImage.width * lastImage.height !== settings.width * settings.height) return undefined;
+  if (!lastFrames) return { image: lastImage };
+  if (fallbackCache?.frames !== lastFrames) {
+    const gif = encodeGif(lastFrames, lastDelays, { nonce: gifNonce() });
+    fallbackCache = { frames: lastFrames, content: { gif, width: settings.width, height: settings.height, still: lastFrames[0] } };
+  }
+  return fallbackCache.content;
+}
 function newController() {
   controller = new DeviceController({
     profile: profileFor(settings),
@@ -79,6 +90,7 @@ function newController() {
     keepBlack: Boolean(settings.keepBlack),
     blackImage: physical(solid(...logicalDims(), [0, 0, 0])),
   });
+  controller.setRestoreFallback(connectPreviewContent);
   controller.subscribe(renderStatus);
 }
 /** In the app (and mock mode) the Connect tab's cap is cap 1 of approach mode: one shared connection. */
@@ -95,6 +107,7 @@ function onPrimaryChange(p: PrimaryCap | null) {
     controller = p.controller;
     deviceName = p.name;
     controller.setKeepBlack(Boolean(settings.keepBlack), physical(solid(...logicalDims(), [0, 0, 0])));
+    controller.setRestoreFallback(connectPreviewContent);
     if (!watched.has(controller)) { watched.add(controller); controller.subscribe(renderStatus); }
   } else {
     newController();
@@ -604,6 +617,8 @@ async function refreshPreview(content?: Content) {
     $('#c-err').textContent = (e as Error).message;
   }
   updateButtons();
+  scanner?.updateStatus(); // the preview is the greeting's restore fallback
+  sound?.updateStatus();
 }
 
 async function sendImage(img: RgbImage) {

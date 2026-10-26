@@ -63,7 +63,7 @@ export class GreetingUi {
         <p id="qr-error" class="bad" role="alert"></p>
         <p id="qr-ready" class="small" role="status"></p>
         <p class="small">Scan a badge code or capture its printed text to greet its owner on this phone's primary cap. Other caps keep playing.
-        Send content to the cap first so it can be restored afterwards.</p>
+        After the greeting the cap shows the content last sent, or the Connect preview if nothing was sent yet.</p>
         <label for="qr-profile">Saved badge profile</label>
         <select id="qr-profile"><option value="">None — general scan data</option></select>
       </div>
@@ -327,7 +327,7 @@ export class GreetingUi {
     const ctl = this.ctx.controller();
     const unavailable = ctl.state !== 'Ready' || !ctl.canRestoreContent || ctl.temporaryActive || this.processing || this.sharingLog || this.savingLogging;
     $('qr-ready').textContent = this.scanning ? '' : ctl.state !== 'Ready' ? 'Connect your primary cap on Connect before scanning.'
-      : !ctl.canRestoreContent ? 'Send content from Connect first so it can be restored after the greeting.'
+      : !ctl.canRestoreContent ? 'Choose valid content on Connect so it can be shown after the greeting.'
       : ctl.temporaryActive || this.processing ? 'Wait for the current greeting to finish, or end it above.'
       : this.sharingLog || this.savingLogging ? 'Wait for the scan log operation to finish.' : 'Ready to scan a badge.';
     $<HTMLButtonElement>('qr-start').disabled = unavailable || this.scanning;

@@ -161,6 +161,19 @@ describe('temporary cap playback', () => {
     await expect(controller.playTemporary(gif, still, 1000)).rejects.toThrow(/Send content/);
     expect(transport.writes).toHaveLength(2);
   });
+  it('restores the fallback content when nothing was sent since connecting', async () => {
+    vi.useFakeTimers();
+    const { controller, transport } = await setup();
+    let fallback: { image: typeof img } | undefined;
+    controller.setRestoreFallback(() => fallback);
+    expect(controller.canRestoreContent).toBe(false);
+    fallback = { image: img };
+    expect(controller.canRestoreContent).toBe(true);
+    const playback = controller.playTemporary(gif, still, 100);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(playback).resolves.toBe('completed');
+    expect(streams(transport).at(-1)).toEqual(buildImageStream(img).bytes);
+  });
   it('restores the last sent image, not the edited preview, after exactly the requested duration', async () => {
     vi.useFakeTimers();
     const { controller, transport } = await setup();
