@@ -63,6 +63,24 @@ test.describe('web tab navigation @smoke', () => {
     await expect(page.locator('#tab-bar')).toBeHidden();
   });
 
+  test('remembers the connected hat across reloads until Disconnect', async ({ page }) => {
+    await installFakeHat(page);
+    await page.goto('./');
+    await page.click('#btn-connect');
+    await expect(page.locator('#status')).toContainText('Ready');
+    await expect(page.locator('#connected-name')).toHaveText('Connected to iledcolor-FAKE (remembered)');
+    await page.reload();
+    await expect(page.locator('#status')).toContainText('Ready', { timeout: 15000 });
+    await expect(page.locator('#connected-name')).toHaveText('Connected to iledcolor-FAKE (remembered)');
+    await page.locator('#btn-disconnect').click();
+    await expect(page.locator('#status')).toHaveText('Disconnected');
+    await expect(page.locator('#remembered-hat')).toBeHidden();
+    await expect(page.locator('#btn-connect')).toHaveText('Connect');
+    await page.reload();
+    await expect(page.locator('#btn-connect')).toBeEnabled();
+    await expect(page.locator('#status')).toHaveText('Disconnected');
+  });
+
   for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
     test(`click every tab at ${viewport.width}px with a connected cap`, async ({ page }) => {
       const errors: string[] = [];

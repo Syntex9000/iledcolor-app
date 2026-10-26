@@ -106,8 +106,12 @@ export async function installFakeHat(page: Page) {
 }
 
 /** Connects through the Connect tab and waits until the hat is ready. */
+/** Connects the fake hat, unless the app already reconnected the remembered hat on load. */
 export async function connectHat(page: Page) {
-  await page.click('#btn-connect');
+  const ready = page.locator('#status', { hasText: 'Ready' });
+  const connect = page.locator('#btn-connect:enabled');
+  await expect(ready.or(connect)).toBeVisible({ timeout: 15000 });
+  if (!(await ready.isVisible())) await connect.click();
   await expect(page.locator('#status')).toContainText('Ready', { timeout: 15000 });
 }
 

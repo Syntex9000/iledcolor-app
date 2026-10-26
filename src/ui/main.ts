@@ -17,8 +17,8 @@ import {
 import { composeSequence } from '../render/sequence';
 import { exportSelectedJson, mergeSharedPresets, parseSharedBackup, type ShareSelection } from '../storage/sharedBackup';
 import { MockTransport } from '../transport/mock';
-import { SPIKE_PROFILE, type TransportProfile } from '../transport/types';
-import { bluetoothSupport, connectWebBluetooth } from '../transport/webBluetooth';
+import { SPIKE_PROFILE, type Transport, type TransportProfile } from '../transport/types';
+import { bluetoothSupport, connectWebBluetooth, reconnectWebBluetooth, rememberedDevice } from '../transport/webBluetooth';
 import { chooseNativeCap, connectNativeCap, readCapRssi, startNativeScan, stopNativeScan } from '../transport/nativeBle';
 import { isNativeApp, platformName } from '../platform';
 import { applyGroupContent, applyImportedApproachSettings, getApproachSettings, approachRunning, connectAsPrimary, createContentChanged, disconnectPrimary, initApproach, keepBlackChanged, renderApproach, sharePeers, shareIdentity, textFontChanged, type PrimaryCap } from '../approach/ui';
@@ -95,10 +95,13 @@ function newController() {
 }
 /** In the app (and mock mode) the Connect tab's cap is cap 1 of approach mode: one shared connection. */
 const sharedCap = () => native || useMock;
-const updateConnectionStatus = initConnectionStatus($('#connection-status'), () => {
+/** An explicit disconnect forgets the hat so another one can be paired; dropped connections keep it. */
+function disconnectHat() {
+  forgetHat();
   if (sharedCap()) disconnectPrimary();
   else controller.disconnect();
-});
+}
+const updateConnectionStatus = initConnectionStatus($('#connection-status'), disconnectHat);
 const watched = new WeakSet<DeviceController>();
 function onPrimaryChange(p: PrimaryCap | null) {
   scanner?.stopCamera();
@@ -145,7 +148,7 @@ function updateButtons() {
   const ready = s === 'Ready' && !controller.temporaryActive;
   const busy = s === 'Selecting' || s === 'Connecting' || s === 'Handshaking' || s === 'Uploading';
   const set = (id: string, v: boolean) => { const b = document.getElementById(id) as HTMLButtonElement | null; if (b) b.disabled = v; };
-  set('btn-connect', busy || ready || controller.temporaryActive);
+  set('btn-connect', busy || ready || reconnecting || controller.temporaryActive);
   set('btn-send', !ready || !lastImage);
   const help = document.getElementById('send-help');
   if (help) help.textContent = controller.temporaryActive ? 'Wait for the current cap reaction to finish before sending.'
@@ -159,7 +162,7 @@ function updateButtons() {
   const prog = document.getElementById('progress');
   if (prog) prog.hidden = s !== 'Uploading';
   const label = document.getElementById('btn-connect');
-  if (label) label.textContent = s === 'Error' || controller.error ? 'Reconnect' : 'Connect';
+  if (label) label.textContent = rememberedHat ? `Reconnect to ${rememberedHat.name}` : s === 'Error' || controller.error ? 'Reconnect' : 'Connect';
 }
 
 /** Until a hat is connected only the connection controls are shown; everything else needs a hat. */
@@ -173,6 +176,10 @@ function applyConnectionGate() {
   }
   const connectionCard = document.getElementById('connection-card');
   if (connectionCard) connectionCard.hidden = connected;
+  const connectedCard = document.getElementById('connected-card');
+  if (connectedCard) connectedCard.hidden = !connected;
+  const connectedName = document.getElementById('connected-name');
+  if (connectedName) connectedName.textContent = `Connected to ${deviceName || rememberedHat?.name || 'hat'}${rememberedHat ? ' (remembered)' : ''}`;
   const approachTab = document.getElementById('tab-approach');
   if (approachTab) approachTab.hidden = !connected || !approachAvailable;
   if (!connected && showTab && $('#view-connect').hidden) showTab('connect');
@@ -199,13 +206,83 @@ function renderConnect() {
         <button id="btn-install" hidden>Install app</button>
       </div>
       <p id="conn-msg" class="small"></p>
+      <div id="remembered-hat" class="row" hidden>
+        <span id="remembered-name"></span>
+        <button id="btn-forget">Forget</button>
+      </div>
       <p class="small">Close other controller apps first. ${native ? `${platformName() === 'ios' ? 'iOS' : 'Android'} will ask for Bluetooth permission the first time you connect.` : 'Choose your hat in the browser Bluetooth picker. Connecting requires Web Bluetooth; editing and presets are available after connecting.'}</p>
       <p class="small" id="install-help" hidden>To install: use your browser's Install app or Add to Home Screen option.</p>
+    </div>
+    <div class="card row" id="connected-card" hidden>
+      <span id="connected-name"></span>
+      <button id="btn-disconnect" class="danger">Disconnect</button>
     </div>
     <div id="content-editor"></div>
     <div id="github-section"></div>`;
   $('#btn-connect').onclick = onConnect;
+  $('#btn-disconnect').onclick = disconnectHat;
+  $('#btn-forget').onclick = forgetHat;
+  renderRememberedHat();
   renderStatus();
+}
+
+// ---------- remembered hat -------------------------------------------------------
+
+interface RememberedHat { id: string; name: string }
+let rememberedHat: RememberedHat | null = null;
+let reconnecting = false;
+
+async function loadRememberedHat() {
+  const raw = await loadKv('rememberedHat').catch(() => undefined) as Partial<RememberedHat> | undefined;
+  rememberedHat = typeof raw?.id === 'string' && typeof raw.name === 'string' ? { id: raw.id, name: raw.name } : null;
+}
+function rememberHat(id: string, name: string) {
+  if (!id || id.startsWith('mock-')) return;
+  rememberedHat = { id, name };
+  void saveKv('rememberedHat', rememberedHat).catch(() => undefined);
+  renderRememberedHat();
+}
+function forgetHat() {
+  rememberedHat = null;
+  void saveKv('rememberedHat', null).catch(() => undefined);
+  renderRememberedHat();
+}
+function renderRememberedHat() {
+  const box = document.getElementById('remembered-hat');
+  if (!box) return;
+  box.hidden = !rememberedHat;
+  $('#remembered-name').textContent = rememberedHat ? `Remembered hat: ${rememberedHat.name}` : '';
+  updateButtons();
+}
+
+/** Reconnects the remembered hat without the Bluetooth picker where the platform allows it. */
+async function reconnectRemembered(): Promise<boolean> {
+  const hat = rememberedHat;
+  if (!hat) return false;
+  reconnecting = true;
+  const m = document.getElementById('conn-msg');
+  if (m) m.textContent = `Reconnecting to ${hat.name}…`;
+  updateButtons();
+  try { return await reconnectHat(hat); } finally { reconnecting = false; updateButtons(); }
+}
+async function reconnectHat(hat: RememberedHat): Promise<boolean> {
+  if (sharedCap()) {
+    try { await connectAsPrimary(hat.id, hat.name); }
+    catch (e) { const m = document.getElementById('conn-msg'); if (m) m.textContent = `Could not reconnect to ${hat.name}: ${(e as Error).message}`; }
+    renderStatus();
+    return true;
+  }
+  const device = bluetoothSupport().ok ? await rememberedDevice(hat.id) : undefined;
+  const m = document.getElementById('conn-msg');
+  if (!device) {
+    if (m) m.textContent = `Tap Reconnect and choose ${hat.name} in the Bluetooth picker.`;
+    return false;
+  }
+  await connectWeb(() => reconnectWebBluetooth(device));
+  if (controller.state !== 'Ready') {
+    if (m) m.textContent = `Could not reconnect to ${hat.name}${controller.error ? `: ${controller.error}` : ''}. Switch it on and tap Reconnect.`;
+  }
+  return true;
 }
 
 function renderDeviceSettings() {
@@ -331,25 +408,36 @@ function persistSettings() {
 }
 
 async function onConnect() {
+  if (rememberedHat && await reconnectRemembered()) return;
   if (sharedCap()) {
     try {
       const d = useMock ? { deviceId: `mock-${Date.now().toString(36)}`, name: 'iledcolor-MOCK' } : await chooseNativeCap();
       await connectAsPrimary(d.deviceId, d.name);
+      rememberHat(d.deviceId, d.name);
     } catch (e) {
       if ((e as Error).name !== 'SelectionCancelledError') { const m = document.getElementById('conn-msg'); if (m) m.textContent = (e as Error).message; }
     }
     renderStatus();
     return;
   }
-  newController();
-  deviceName = '';
-  await controller.connect(async () => {
+  await connectWeb(() => {
     const sup = bluetoothSupport();
     if (!sup.ok) throw new Error(sup.reason);
-    const r = await connectWebBluetooth();
+    return connectWebBluetooth();
+  });
+}
+
+async function connectWeb(open: () => Promise<{ transport: Transport; deviceName: string; deviceId: string }>) {
+  newController();
+  deviceName = '';
+  let deviceId = '';
+  await controller.connect(async () => {
+    const r = await open();
     deviceName = r.deviceName;
+    deviceId = r.deviceId;
     return r.transport;
   });
+  if (controller.state === 'Ready') rememberHat(deviceId, deviceName);
   if (settings.keepBlack && controller.state === 'Ready') {
     await controller.applyKeepBlackIdle(physical(solid(...logicalDims(), [0, 0, 0]))).catch(() => undefined);
   }
@@ -1047,7 +1135,12 @@ async function main() {
   } catch (e) { banner(`<b>Could not restore the Connect sequence:</b> ${esc((e as Error).message)}`); }
   await initApproach(approachContext());
   initShareReceiver();
+  await loadRememberedHat();
+  // Approach mode reconnects its own saved caps.
+  const approachResumes = sharedCap() && (await loadKv('approachEnabled').catch(() => false)) === true;
+  reconnecting = Boolean(rememberedHat) && !approachResumes;
   renderConnect();
+  if (reconnecting) void reconnectRemembered();
   renderDeviceSettings();
   // Navigation must not wait for optional features to restore storage or query native capabilities.
   showTab = initTabs($('#tab-bar'), onTabSelected);

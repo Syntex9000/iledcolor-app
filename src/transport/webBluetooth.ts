@@ -17,7 +17,7 @@ export function bluetoothSupport(): { ok: true } | { ok: false; reason: string }
 /** Must be called from a user gesture (tap). Resolves once A953 notifications are started. */
 export async function connectWebBluetooth(
   namePrefix = NAME_PREFIX,
-): Promise<{ transport: Transport; deviceName: string }> {
+): Promise<{ transport: Transport; deviceName: string; deviceId: string }> {
   let device: BluetoothDevice;
   try {
     device = await navigator.bluetooth.requestDevice({
@@ -28,6 +28,34 @@ export async function connectWebBluetooth(
     if (e instanceof DOMException && e.name === 'NotFoundError') throw new SelectionCancelledError();
     throw e;
   }
+  return openDevice(device);
+}
+
+/** A hat this site was already allowed to use, or undefined when the browser cannot return it without the picker. */
+export async function rememberedDevice(id: string): Promise<BluetoothDevice | undefined> {
+  if (typeof navigator.bluetooth?.getDevices !== 'function') return undefined;
+  const devices = await navigator.bluetooth.getDevices().catch(() => []);
+  return devices.find((d) => d.id === id);
+}
+
+/** Reconnects a remembered hat without the picker; waits briefly for it to advertise if it is not reachable yet. */
+export async function reconnectWebBluetooth(device: BluetoothDevice, waitMs = 10000): Promise<{ transport: Transport; deviceName: string; deviceId: string }> {
+  try {
+    return await openDevice(device);
+  } catch (first) {
+    if (typeof device.watchAdvertisements !== 'function') throw first;
+    const abort = new AbortController();
+    const seen = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { abort.abort(); reject(new Error(`${device.name ?? 'The hat'} was not found nearby. Make sure it is switched on.`)); }, waitMs);
+      device.addEventListener('advertisementreceived', () => { clearTimeout(timer); abort.abort(); resolve(); }, { once: true });
+    });
+    await device.watchAdvertisements({ signal: abort.signal });
+    await seen;
+    return openDevice(device);
+  }
+}
+
+async function openDevice(device: BluetoothDevice): Promise<{ transport: Transport; deviceName: string; deviceId: string }> {
   if (!device.gatt) throw new Error('Device has no GATT server');
   const server = await device.gatt.connect();
   try {
@@ -63,7 +91,7 @@ export async function connectWebBluetooth(
       onDisconnect(cb) { dropListeners.add(cb); return () => dropListeners.delete(cb); },
       disconnect() { closing = true; if (device.gatt?.connected) device.gatt.disconnect(); },
     };
-    return { transport, deviceName: device.name ?? 'unknown' };
+    return { transport, deviceName: device.name ?? 'unknown', deviceId: device.id };
   } catch (e) {
     server.disconnect();
     throw e;
